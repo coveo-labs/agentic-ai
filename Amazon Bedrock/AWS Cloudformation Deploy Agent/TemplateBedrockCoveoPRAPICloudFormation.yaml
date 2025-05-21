@@ -1,0 +1,408 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation template for deploying a Bedrock Agent with 
+  a Coveo-based Action Group using Custom Resources.
+
+Parameters:
+  AgentName:
+    Type: String
+    Description: "The name of the Bedrock agent"
+  CoveoSearchHub:
+    Type: String
+    Description: "Coveo Search Hub"
+  CoveoApiKey:
+    Type: String
+    Description: "Coveo API Key"
+    NoEcho: true
+  CoveoOrgID:
+    Type: String
+    Description: "Coveo Organization ID"
+  ResourceRoleArn:
+    Type: String
+    Description: "The IAM role ARN to create resources and that the agent will use"
+  AgentModelID:
+    Type: String
+    Description: "Bedrock Model ID"
+    Default: "anthropic.claude-3-haiku-20240307-v1:0"
+  DataSummary:
+    Type: String
+    Description: "Summary explaining the content of your data."
+    MaxLength: 200
+  
+Resources:
+  ########################################
+  # 1) Coveo Action Group Lambda
+  ########################################
+  BedrockActionGroupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "bedrock-action-group"
+      Description: "Lambda to retrieve data from Coveo Passage Retrieval API"
+      Handler: index.lambda_handler
+      Role: !Ref ResourceRoleArn
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          COVEO_SEARCH_HUB: !Ref CoveoSearchHub
+          COVEO_API_KEY: !Ref CoveoApiKey
+          COVEO_ORG_ID: !Ref CoveoOrgID
+      Code:
+        ZipFile: |
+          import json
+          import http.client
+          import urllib.parse
+          import time
+          import os
+
+          def lambda_handler(event, context):
+              print(event)
+              print(context)
+
+              apiPath = event["apiPath"]
+              server = f"{os.environ['COVEO_ORG_ID']}.org.coveo.com"
+              api_key = os.environ['COVEO_API_KEY']
+              query = event["inputText"]
+              searchHub = os.environ['COVEO_SEARCH_HUB']
+              org_id = os.environ['COVEO_ORG_ID']
+
+              headers = {
+                  'Content-Type': 'application/json',
+                  'Authorization': f'Bearer {api_key}'
+              }
+
+              request_body = {
+                  'localization': {
+                      "locale": "en-CA",
+                      "timezone": "America/Montreal"
+                  },
+                  'additionalFields':['clickableuri'],
+                  'query': query,
+                  'searchHub': searchHub,
+                  'maxPassages': 5
+              }
+
+              json_body = json.dumps(request_body)
+
+              try:
+                  connection = http.client.HTTPSConnection(server)
+                  print("connection", connection)
+
+                  connection.request("POST", apiPath, body=json_body, headers=headers)
+
+                  response = connection.getresponse()
+                  response_body = response.read().decode('utf-8')
+                  
+                  print(f'HTTP Response Status: {response.status}, Reason: {response.reason}')
+                  
+                  if 200 <= response.status < 300:
+                      response_data = json.loads(response_body)['items']
+                      print(response_data)
+                      if 'requestBody' in event:
+                          action_response = {
+                              "actionGroup": event["actionGroup"],
+                              "apiPath": event["apiPath"],
+                              "httpMethod": event["httpMethod"],
+                              "parameters": event["parameters"],
+                              "httpStatusCode": response.status,
+                              "responseBody": response_data,
+                          }
+                          session_attributes = event.get("sessionAttributes", {})
+                          prompt_session_attributes = event.get("promptSessionAttributes", {})
+                          return {
+                              "messageVersion": "1.0",
+                              "response": action_response,
+                              "sessionAttributes": session_attributes,
+                              "promptSessionAttributes": prompt_session_attributes,
+                          }
+                      else:
+                          return ", ".join(item['text'] for item in response_data)
+                  else:
+                      raise Exception(f'Failed to send request to Coveo API: {response.status}, {response.reason}')
+              
+              except Exception as e:
+                  print(f'Exception occurred during HTTP callout: {str(e)}')
+                  raise Exception(f'Failed to send request to Coveo API: {str(e)}')
+              
+              finally:
+                  connection.close()
+
+  LambdaPermissionForBedrock:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt BedrockActionGroupLambda.Arn
+      Principal: "bedrock.amazonaws.com"
+      SourceArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
+
+  ########################################
+  # 2) Custom Resource Handler Lambda
+  ########################################
+  BedrockCustomResourceHandlerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "bedrock-custom-resource-handler"
+      Handler: index.handler
+      Role: !Ref ResourceRoleArn
+      Runtime: python3.12
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import boto3
+          import urllib3
+          import time
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          http = urllib3.PoolManager()
+
+
+          bedrock_client = boto3.client('bedrock-agent')
+          lambda_client = boto3.client('lambda')
+
+          def handler(event, context):
+              logger.info(f"Received event: {json.dumps(event, indent=2)}")
+              response_url = event["ResponseURL"]
+              stack_id = event["StackId"]
+              request_id = event["RequestId"]
+              logical_id = event["LogicalResourceId"]
+              request_type = event["RequestType"]
+
+              props = event.get("ResourceProperties", {})
+
+              status = "SUCCESS"
+              reason = "Operation successful."
+              physical_resource_id = None
+              data = {}
+
+              try:
+                  if request_type == "Create":
+                      agent_id = create_bedrock_agent(props)
+                      physical_resource_id = agent_id
+                      data["AgentId"] = agent_id
+                  elif request_type == "Update":
+                      physical_resource_id = "NoChange"
+                      data["AgentId"] = "NoChange"
+                  elif request_type == "Delete":
+                      physical_resource_id = event.get("PhysicalResourceId", "Unknown")
+                      try:
+                          # Attempt to delete the agent using its agentId
+                          delete_resp = bedrock_client.delete_agent(agentId=physical_resource_id)
+                          logger.info(f"delete_agent response: {delete_resp}")
+                          data["Message"] = "Agent successfully deleted."
+                      except Exception as e:
+                          logger.exception("Error deleting agent: " + str(e))
+                          status = "FAILED"
+                          reason = f"Agent deletion failed: {str(e)}"
+                          physical_resource_id = physical_resource_id or "ERROR"
+              except Exception as e:
+                  logger.exception("Error handling the Custom Resource event.")
+                  status = "FAILED"
+                  reason = str(e)
+                  physical_resource_id = physical_resource_id or "ERROR"
+
+              send_cfn_response(
+                  response_url=response_url,
+                  stack_id=stack_id,
+                  request_id=request_id,
+                  logical_id=logical_id,
+                  status=status,
+                  reason=reason,
+                  data=data,
+                  physical_id=physical_resource_id
+              )
+
+          def create_bedrock_agent(props):
+              agent_name = props["AgentName"]
+              agent_description = props["AgentDescription"]
+              agent_instruction = props["AgentInstruction"]
+              resource_role_arn = props["ResourceRoleArn"]
+              agent_model_id = props["AgentModelId"]
+
+              action_group_name = props["AgentActionGroupName"]
+              action_group_description = props["AgentActionGroupDescription"]
+              openapi_schema = props["OpenApiSchema"]
+
+              coveo_lambda_arn = props["CoveoLambdaArn"]
+
+              create_resp = bedrock_client.create_agent(
+                  agentName=agent_name,
+                  description=agent_description,
+                  agentResourceRoleArn=resource_role_arn,
+                  foundationModel=agent_model_id,
+                  instruction=agent_instruction
+              )
+              logger.info(f"create_agent response: {create_resp}")
+              agent_id = create_resp["agent"]["agentId"]
+
+              time.sleep(10)
+
+              create_agent_action_group(
+                  agent_id=agent_id,
+                  action_group_name=action_group_name,
+                  action_group_description=action_group_description,
+                  lambda_arn=coveo_lambda_arn,
+                  openapi_schema=openapi_schema
+              )
+
+              bedrock_client.prepare_agent(agentId=agent_id)
+              return agent_id
+
+          def create_agent_action_group(agent_id, action_group_name, action_group_description, lambda_arn, openapi_schema):
+              resp = bedrock_client.create_agent_action_group(
+                  actionGroupName=action_group_name,
+                  description=action_group_description,
+                  actionGroupState="ENABLED",
+                  agentId=agent_id,
+                  agentVersion="DRAFT",
+                  actionGroupExecutor={"lambda": lambda_arn},
+                  apiSchema={"payload": openapi_schema},
+              )
+              logger.info(f"create_agent_action_group response: {resp}")
+
+          def send_cfn_response(response_url, stack_id, request_id, logical_id, status, reason, data, physical_id):
+              response_body = {
+                  "Status": status,
+                  "Reason": reason,
+                  "PhysicalResourceId": physical_id,
+                  "StackId": stack_id,
+                  "RequestId": request_id,
+                  "LogicalResourceId": logical_id,
+                  "NoEcho": False,
+                  "Data": data,
+              }
+              encoded_response = json.dumps(response_body).encode("utf-8")
+              headers = {"content-type": "", "content-length": str(len(encoded_response))}
+
+              try:
+                  response = http.request("PUT", response_url, body=encoded_response, headers=headers)
+                  logger.info(f"CloudFormation returned status code: {response.status}")
+              except Exception as e:
+                  logger.error(f"send_cfn_response failed: {e}")
+
+  ########################################
+  # 3) BedrockAgent Custom Resource
+  ########################################
+  BedrockAgentResource:
+    Type: Custom::BedrockAgent
+    Properties:
+      ServiceToken: !GetAtt BedrockCustomResourceHandlerLambda.Arn
+      AgentName: !Sub "${AgentName}"
+      AgentDescription: !Sub "You are an intelligent assistant designed to help users retrieve and understand information about ${DataSummary}."
+      AgentInstruction: !Sub |
+        You will act as an expert on ${DataSummary}.
+        Use the CoveoPRAPI Action Group to retrieve relevant information on ${DataSummary}.
+        Summarize the information retrieved from the Action Group response clearly and accurately.
+
+        OuputFormatting guidelines:
+        - Provide clear, direct answers without introductory phrases such as “As an expert,” “Sure,” or “Here is...”
+        - When appropriate, organize content using:
+          - Numbered or bulleted lists
+        - Structured sections (e.g., features, steps, key points)
+        - Always add at the end of your answer "Citations : " and the document links and titles as numberedd list related to the chunks used to generate the answer.
+
+        Keep answers concise, informative, and free of conversational filler.
+      ResourceRoleArn: !Ref ResourceRoleArn
+      AgentModelId: !Ref AgentModelID
+      AgentActionGroupName: "CoveoPRAPI"
+      AgentActionGroupDescription: !Sub "Retrieve information on ${DataSummary}."
+      OpenApiSchema: !Sub |
+        openapi: 3.0.0
+        info:
+          title: Coveo Passage Retrieval API
+          version: 1.0.0
+          description: >
+            This plugin is the main source of information for a user to quickly access 
+            detailed information about ${DataSummary}. Use only this source and nothing else to write an answer.
+        servers:
+          - url: https://${CoveoOrgID}.org.coveo.com
+            description: Coveo Cloud Platform
+        paths:
+          /rest/search/v3/passages/retrieve:
+            post:
+              summary: Retrieve passages based on a user query about detailed information about ${DataSummary}.
+              description: >
+                API route that helps users quickly access detailed information about ${DataSummary}.
+              operationId: retrievePassages
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      properties:
+                        query:
+                          type: string
+                          description: The search query entered by the user.
+                      required:
+                        - query
+              responses:
+                "200":
+                  description: A list of passages related to the user query.
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          items:
+                            type: object
+                            properties:
+                              text:
+                                type: string
+                                description: The text of the passage retrieved.
+                              relevanceScore:
+                                type: number
+                                format: float
+                                description: The relevance score of the passage.
+                              document:
+                                type: object
+                                description: This is the document that you can use for ciatations
+                                properties:
+                                  title:
+                                    type: string
+                                    description: Title of the document.
+                                  primaryid:
+                                    type: string
+                                    description: Primary ID of the document.
+                                  clickableuri:
+                                    type: string
+                                    description: URL of the document.
+                "400":
+                  description: Invalid request, such as missing required parameters.
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          error:
+                            type: string
+                            description: Error message describing the issue.
+                "401":
+                  description: Unauthorized, such as missing or invalid authorization token.
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          error:
+                            type: string
+                            description: Error message describing the issue.
+                "500":
+                  description: Internal server error, indicating an issue with the platform.
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          error:
+                            type: string
+                            description: Error message describing the issue.
+      CoveoLambdaArn: !GetAtt BedrockActionGroupLambda.Arn
+
+Outputs:
+  BedrockAgentId:
+    Description: "The ID of the created Bedrock Agent"
+    Value: !GetAtt BedrockAgentResource.AgentId
