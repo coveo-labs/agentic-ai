@@ -1,0 +1,82 @@
+kind: AdaptiveDialog
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent:
+    triggerQueries:
+      - "Search in Coveo :"
+      - "What do you know about :"
+
+  actions:
+    - kind: SetVariable
+      id: setVariable_mYnPhQ
+      variable: Topic.query
+      value: =System.Activity.Text
+
+    - kind: SetVariable
+      id: setVariable_Jke7II
+      variable: Topic.query
+      value: =Index(Split(Topic.query,":"),2).Value
+
+    - kind: HttpRequestAction
+      id: tKU5FH
+      method: Post
+      url: https://[org_id].org.coveo.com/rest/search/v3/passages/retrieve
+      headers:
+        Authorization: Bearer [api_key]
+        Content-Type: application/json
+
+      body:
+        kind: JsonRequestContent
+        content: |-
+          ={
+            localization:  {
+              locale: "en-CA",
+              timezone: "America/Montreal"
+            },
+            query: Topic.query,  
+            searchHub: "[SearchHub]", 
+            maxPassages: 5
+          }
+
+      response: Topic.result
+      responseSchema:
+        kind: Record
+        properties:
+          items:
+            type:
+              kind: Table
+              properties:
+                document:
+                  type:
+                    kind: Record
+                    properties:
+                      clickableUri: String
+                      permanentId: String
+                      title: String
+                      uniqueId: String
+
+                relevanceScore: Number
+                text: String
+
+          warnings:
+            type:
+              kind: Table
+              properties:
+                Value: String
+
+    - kind: SearchAndSummarizeContent
+      id: QeEtlw
+      autoSend: true
+      userInput: =Topic.query
+      additionalInstructions: Summarize me the Input
+      applyModelKnowledgeSetting: false
+      customDataSource:
+        searchResults: =ForAll(Topic.result.items,{'Content':text})
+
+      fileSearchDataSource:
+        searchFilesMode:
+          kind: SearchAllFiles
+
+      knowledgeSources:
+        kind: SearchAllKnowledgeSources

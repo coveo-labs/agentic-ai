@@ -1,0 +1,43 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/copilot/plugin/v2.2/schema.json",
+  "schema_version": "v2.2",
+  "namespace": "repairs",
+  "name_for_human": "CoveoPRAPI${{APP_NAME_SUFFIX}}",
+  "description_for_human": "Answer user questions",
+  "description_for_model": "Plugin for searching anwser to a question with Coveo Passage Retrieval API",
+  "functions": [
+    {
+      "name": "listPassages",
+      "description": "Returns a list of passage with their details",
+      "capabilities": {
+        "response_semantics": {
+          "data_path": "$.items",
+          "properties": {
+            "title": "$.text"
+          }
+        }
+      } 
+    }    
+  ],
+  "runtimes": [
+    {
+      "type": "OpenApi",
+      "auth": {
+        "type": "ApiKeyPluginVault",
+        "reference_id": "${{APIKEY_REGISTRATION_ID}}"
+      },
+      "spec": {
+        "url": "apiSpecificationFile/passage.yml",
+        "progress_style": "ShowUsageWithInputAndOutput"
+      },
+      "run_for_functions": ["listPassages"]
+    }
+  ],
+  "capabilities": {
+    "conversation_starters": [
+      {
+        "text": "List all passages"
+      }
+    ]
+  }
+}

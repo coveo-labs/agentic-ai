@@ -1,0 +1,89 @@
+kind: AdaptiveDialog
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent:
+    triggerQueries:
+      - "Search for :"
+
+  actions:
+    - kind: SetVariable
+      id: setVariable_mYnPhQ
+      variable: Topic.query
+      value: =System.Activity.Text
+
+    - kind: SetVariable
+      id: setVariable_Jke7II
+      variable: Topic.query
+      value: =Index(Split(Topic.query,":"),2).Value
+
+    - kind: HttpRequestAction
+      id: tKU5FH
+      method: Post
+      url: https://[org_id].org.coveo.com/rest/organizations/[org_id]/answer/v1/configs/[config_id]/generate
+      headers:
+        Authorization: Bearer [api_key]
+        Content-Type: application/json, text/event-stream
+
+      body:
+        kind: JsonRequestContent
+        content: |-
+          ={
+            q: Topic.query,  
+            searchHub: "[searchHub]",
+            pipeline : "[pipeline]",
+            pipelineRuleParameters: {
+              mlGenerativeQuestionAnswering: {
+                responseFormat: {
+                    contentFormat: ["text/markdown", "text/plain"]
+                }
+              }
+            }
+          }
+
+      response: Topic.answer
+      responseSchema: String
+
+    - kind: SetVariable
+      id: setVariable_OV6BXz
+      variable: Topic.answer
+      value: |-
+        =With(
+            {
+                answer : Concat(
+                        Concatenate(
+                            Filter(
+                            ForAll(
+                                Filter(
+                                    Split(Topic.answer, Char(10)),
+                                    Mid(Value, 1, 5) = "data:" &&
+                                    !IsBlank(Value)
+                                ),
+                                With(
+                                    {
+                                        parsedJson: ParseJSON(Mid(Value, 7))
+                                    },
+                                    If(
+                                        Text(parsedJson.payloadType) = "genqa.messageType",
+                                        With(
+                                            {
+                                                payloadJson: ParseJSON(Text(Value(parsedJson.payload))),
+                                                delta: Text(ParseJSON(Text(parsedJson.payload)).textDelta)
+                                            },
+                                            If(!IsBlank(delta), delta, "")
+                                        ),
+                                        ""
+                                    )
+                                )
+                            ),
+                            !IsBlank(Value)
+                            )
+                        ), 
+                        Value)
+            },
+            If(!IsBlank(answer),answer, "Sorry, I couldn’t find an answer to your question. Want to try rephrasing it?")
+        )   
+
+    - kind: SendActivity
+      id: sendActivity_jeAXt2
+      activity: "{Topic.answer}"

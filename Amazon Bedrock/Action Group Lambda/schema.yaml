@@ -1,0 +1,90 @@
+openapi: 3.0.0
+info:
+  title: Coveo Passage Retrieval API
+  version: 1.0.0
+  description: >
+    API for retrieving passages related to a user query. This action helps users access detailed information about Coveo solutions,including use cases, system capabilities, APIs, frameworks, technologies, how-to articles, and best practices. Designed to empower developers and users to effectively integrate and utilize Coveo for enhanced search and personalization.
+  
+servers:
+  - url: https://{org_id}.org.coveo.com
+    description: Coveo Cloud Platform
+
+paths:
+  /rest/search/v3/passages/retrieve:
+    post:
+      summary: Retrieve passages based on a user query.
+      description: >
+        API for retrieving passages related to a user query. This action helps users access detailed information about Coveo solutions,including use cases, system capabilities, APIs, frameworks, technologies, how-to articles, and best practices. Designed to empower developers and users to effectively integrate and utilize Coveo for enhanced search and personalization.
+      operationId: retrievePassages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: The search query entered by the user.
+              required:
+                - query
+      responses:
+        "200":
+          description: A list of passages related to the user query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: object
+                    properties:
+                      text:
+                        type: string
+                        description: The text of the passage retrieved.
+                      relevanceScore:
+                        type: number
+                        format: float
+                        description: The relevance score of the passage.
+                      document:
+                        type: object
+                        properties:
+                          title:
+                            type: string
+                            description: Title of the document.
+                          primaryid:
+                            type: string
+                            description: Primary ID of the document.
+                          clickableuri:
+                            type: string
+                            description: Link of the document
+        "400":
+          description: Invalid request, such as missing required parameters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.
+        "401":
+          description: Unauthorized, such as missing or invalid authorization token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.
+        "500":
+          description: Internal server error, indicating an issue with the platform.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.

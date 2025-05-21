@@ -1,0 +1,123 @@
+openapi: 3.0.0
+info:
+  title: Coveo Passage Retrieval API
+  version: 1.0.0
+  description: >
+        API for retrieving passages related to a user query. This plugin helps users quickly access detailed information.
+servers:
+  - url: https://[org_id].org.coveo.com
+    description: Coveo Cloud Platform
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://platform.cloud.coveo.com/oauth/authorize
+          tokenUrl: https://platform.cloud.coveo.com/oauth/token
+          refreshUrl: https://platform.cloud.coveo.com/oauth/token/
+          scopes:
+            full: Full access to all operations.
+paths:
+  /rest/search/v3/passages/retrieve:
+    post:
+      summary: Retrieve passages based on a user query about detailed information.
+      description: >
+        API for retrieving passages related to a user query. This Plugin helps users quickly access detailed information.
+      operationId: retrievePassages
+      security:
+        - oauth2:
+            - full
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                localization:
+                  type : object
+                  properties:
+                    locale: 
+                      type: string
+                      default : "en-CA"
+                    timezone:
+                      type: string
+                      default: "America/Montreal"
+                query:
+                  type: string
+                  description: The search query entered by the user.
+                searchHub:
+                  type: string
+                  description: The coveo search hub.
+                  default: '[searchHub]'
+                maxPassages:
+                  type: integer
+                  description: The number of passage chunks to retrieve.
+                  default: 5
+              required:
+                - localization
+                - query
+                - searchHub
+      responses:
+        "200":
+          description: A list of passages related to the user query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passages:
+                    type: array [for now Amazon Q don't support Array]
+                    items:
+                      type: object
+                      properties:
+                        text:
+                          type: string
+                          description: The text of the passage retrieved.
+                        relevanceScore:
+                          type: number
+                          format: float
+                          description: The relevance score of the passage.
+                        document:
+                          type: object
+                          properties:
+                            title:
+                              type: string
+                              description: Title of the document.
+                            primaryid:
+                              type: string
+                              description: Primary ID of the document.
+                            clickableUri:
+                              type: string
+                              description: URL of the document.
+        "400":
+          description: Invalid request, such as missing required parameters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.
+        "401":
+          description: Unauthorized, such as missing or invalid authorization token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.
+        "500":
+          description: Internal server error, indicating an issue with the platform.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error message describing the issue.
