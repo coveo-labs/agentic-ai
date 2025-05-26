@@ -66,6 +66,11 @@ Resources:
               searchHub = os.environ['COVEO_SEARCH_HUB']
               org_id = os.environ['COVEO_ORG_ID']
 
+              #if you want to use the rephrase query from bedrock
+              #for prop in event['requestBody']['content']['application/json']['properties']:    
+                #if prop['name'] == 'query':
+                  #query = prop['value']
+
               headers = {
                   'Content-Type': 'application/json',
                   'Authorization': f'Bearer {api_key}'
@@ -97,7 +102,11 @@ Resources:
                   
                   if 200 <= response.status < 300:
                       response_data = json.loads(response_body)['items']
-                      print(response_data)
+                      
+                      # if you need to log the passages from the Coveo PRAPI
+                      for i, items in enumerate(response_data):
+                        print(f"Chunk {i+1} : {items}")
+
                       if 'requestBody' in event:
                           action_response = {
                               "actionGroup": event["actionGroup"],
