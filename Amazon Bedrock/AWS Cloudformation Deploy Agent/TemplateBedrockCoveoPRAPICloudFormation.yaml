@@ -17,13 +17,10 @@ Parameters:
   CoveoOrgID:
     Type: String
     Description: "Coveo Organization ID"
-  ResourceRoleArn:
-    Type: String
-    Description: "The IAM role ARN to create resources and that the agent will use"
   AgentModelID:
     Type: String
-    Description: "Bedrock Model ID"
-    Default: "anthropic.claude-3-haiku-20240307-v1:0"
+    Description: "Bedrock Model ID or Inference Profile ARN"
+    Default: "anthropic.claude-3-5-sonnet-20240620-v1:0"
   DataSummary:
     Type: String
     Description: "Summary explaining the content of your data."
@@ -31,15 +28,134 @@ Parameters:
   
 Resources:
   ########################################
-  # 1) Coveo Action Group Lambda
+  # 1) IAM Roles
+  ########################################
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaBedrockPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+
+  BedrockAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockAgentPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt BedrockActionGroupLambda.Arn
+              # Allow access to all foundation models and inference profiles
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:GetFoundationModel
+                  - bedrock:GetInferenceProfile
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - bedrock-runtime:InvokeModel
+                Resource: "*"
+              # Specific permissions for inference profiles
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock-runtime:InvokeModel
+                Resource: 
+                  - "arn:aws:bedrock:*::inference-profile/*"
+                  - "arn:aws:bedrock:*::foundation-model/*"
+              - Effect: Allow
+                Action:
+                  - bedrock-agent:InvokeAgent
+                  - bedrock-agent:Retrieve
+                  - bedrock-agent:RetrieveAndGenerate
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
+
+  CustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CustomResourcePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:CreateAgent
+                  - bedrock-agent:CreateAgent
+                  - bedrock:GetFoundationModel
+                  - bedrock:GetInferenceProfile
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - bedrock:DeleteAgent
+                  - bedrock:CreateAgentActionGroup
+                  - bedrock:PrepareAgent
+                  - bedrock-agent:DeleteAgent
+                  - bedrock-agent:CreateAgentActionGroup
+                  - bedrock-agent:PrepareAgent
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:DeleteStack
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt BedrockAgentRole.Arn
+
+  ########################################
+  # 2) Coveo Action Group Lambda
   ########################################
   BedrockActionGroupLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "bedrock-action-group"
       Description: "Lambda to retrieve data from Coveo Passage Retrieval API"
       Handler: index.lambda_handler
-      Role: !Ref ResourceRoleArn
+      Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 180
       Environment:
@@ -106,7 +222,7 @@ Resources:
                       # if you need to log the passages from the Coveo PRAPI
                       for i, items in enumerate(response_data):
                         print(f"Chunk {i+1} : {items}")
-
+                        
                       if 'requestBody' in event:
                           action_response = {
                               "actionGroup": event["actionGroup"],
@@ -145,14 +261,13 @@ Resources:
       SourceArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
 
   ########################################
-  # 2) Custom Resource Handler Lambda
+  # 3) Custom Resource Handler Lambda
   ########################################
   BedrockCustomResourceHandlerLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "bedrock-custom-resource-handler"
       Handler: index.handler
-      Role: !Ref ResourceRoleArn
+      Role: !GetAtt CustomResourceRole.Arn
       Runtime: python3.12
       Timeout: 300
       Code:
@@ -293,7 +408,7 @@ Resources:
                   logger.error(f"send_cfn_response failed: {e}")
 
   ########################################
-  # 3) BedrockAgent Custom Resource
+  # 4) BedrockAgent Custom Resource
   ########################################
   BedrockAgentResource:
     Type: Custom::BedrockAgent
@@ -307,14 +422,13 @@ Resources:
         Summarize the information retrieved from the Action Group response clearly and accurately.
 
         OuputFormatting guidelines:
-        - Provide clear, direct answers without introductory phrases such as “As an expert,” “Sure,” or “Here is...”
+        - Provide clear, direct answers without introductory phrases such as "As an expert," "Sure," or "Here is..."
         - When appropriate, organize content using:
           - Numbered or bulleted lists
         - Structured sections (e.g., features, steps, key points)
-        - Always add at the end of your answer "Citations : " and the document links and titles as numberedd list related to the chunks used to generate the answer.
 
         Keep answers concise, informative, and free of conversational filler.
-      ResourceRoleArn: !Ref ResourceRoleArn
+      ResourceRoleArn: !GetAtt BedrockAgentRole.Arn
       AgentModelId: !Ref AgentModelID
       AgentActionGroupName: "CoveoPRAPI"
       AgentActionGroupDescription: !Sub "Retrieve information on ${DataSummary}."
