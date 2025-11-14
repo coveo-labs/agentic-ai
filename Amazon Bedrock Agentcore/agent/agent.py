@@ -132,14 +132,12 @@ async def invoke(payload) -> dict:
     user_id= (payload or {}).get("user_id", "coveo_user")
     session_id= (payload or {}).get("session_id", "")
     mcp_url = (payload or {}).get("mcp_url", "")
-    model_id = (payload or {}).get("model_id", "amazon.nova-lite-v1:0")
 
     queue.put_event({"status": str(payload)})
     session_manager = MemorySessionManager(memory_id=MEMORY_ID, region_name="us-east-1")
     user_session = session_manager.create_memory_session(actor_id=user_id, session_id=session_id)
 
     agent = Agent(
-        #model=model_id,
         tools=[mcp_client],
         hooks=[MemoryHookProvider(user_session)],
         state={"actor_id": user_id, "session_id": session_id},
