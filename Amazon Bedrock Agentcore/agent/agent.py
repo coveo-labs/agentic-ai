@@ -24,6 +24,7 @@ def build_system_prompt() -> str:
                 - Treat your internal knowledge base as empty.
                 - Never use general world knowledge, assumptions, or reasoning beyond what is explicitly provided.
                 - Do not perform web searches or draw from any external sources.
+                - For maximum efficiency, whenever you need to perform multiple independent operations, invoke all relevant tools simultaneously rather than sequentially.
 
                If the tools and recent conversation contain no relevant information, respond with:
                 - Simply say: “I don’t have that information in the provided context.”
@@ -53,6 +54,22 @@ def build_system_prompt() -> str:
                 - No assumptions.
                 - No web searches.
                 - Be concise, direct, and contextually grounded.
+
+               Available Tools
+                get_answer
+                - **Use for**: Direct factual questions, definitions, how-to queries
+                - **Returns**: Curated answer with citations from Coveo Answer API
+                - **Best for**: Single, focused questions with clear answers
+
+                get_passages
+                - **Use for**: Detailed explanations, comparisons, multi-step processes
+                - **Returns**: Relevant passages with full context and metadata
+                - **Best for**: Complex questions requiring synthesis from multiple sources
+
+                search
+                - **Use for**: Broad exploration, finding multiple resources
+                - **Returns**: Ranked search results with excerpts
+                - **Best for**: Open-ended or exploratory queries
 
                ### Recent conversation:
             """
@@ -128,14 +145,26 @@ async def agent_task(prompt: str, queue:StreamingQueue, agent:Agent, url:str) ->
     try:
         await load_mcp_client(queue=queue, agent=agent, url=url)
         await queue.put_event({"status": "Generating Answer..."})
-        rephrased = await asyncio.to_thread(agent, f"Rephrase this query: '{prompt}'")
-        rquery = extract_text(rephrased)
-
-        await queue.put_event({"status": f"Query rephrased {rquery}"})
-        await queue.put_event({"status": "End"})
-        async for chunk in agent.stream_async(f"Answer this query: <query>{rquery}</query>\n## Knowledge Base\n- Use only tool outputs."):
+        async for chunk in agent.stream_async(f"Answer this query: <query>{prompt}</query>"):
             if "data" in chunk:
+                logger.error(f"Chunk data: {chunk}")
                 await queue.put_event({"answer": chunk["data"]})
+            elif "message" in chunk:
+                message = chunk["message"]
+
+                if "content" in message:
+                    for item in message["content"]:
+                        if "toolUse" in item:
+                            tool_use = item["toolUse"]
+                            agent_tool = tool_use.get("name")
+                            tool_args = tool_use.get("input", {}).get("tool_args", {})
+                            tool_name = tool_use.get("input", {}).get("tool_name", {})
+                            query = tool_args.get("query")
+
+                            await queue.put_event({
+                                "status": f"Agent used: {agent_tool}, Tool: {tool_name}, Query: {query}"
+                            })
+
     except Exception as e:
         await queue.put_event({"error": str(e)})
     finally:
